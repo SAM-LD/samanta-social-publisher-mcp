@@ -16,7 +16,7 @@ from fastapi.responses import HTMLResponse, RedirectResponse
 
 Provider = Literal["meta", "linkedin"]
 
-app = FastAPI(title="Samanta Social Publisher MCP", version="1.3.0")
+app = FastAPI(title="Samanta Social Publisher MCP", version="1.3.1")
 
 
 def env_present(name: str) -> bool:
@@ -28,9 +28,16 @@ def approval_required() -> bool:
 
 
 def base_url() -> str:
-    return os.getenv(
-        "APP_BASE_URL", "https://samanta-social-publisher-mcp.vercel.app"
-    ).rstrip("/")
+    configured = os.getenv("APP_BASE_URL", "").strip().rstrip("/")
+    if configured:
+        return configured
+    production_domain = os.getenv("VERCEL_PROJECT_PRODUCTION_URL", "").strip()
+    if production_domain:
+        return f"https://{production_domain}".rstrip("/")
+    deployment_domain = os.getenv("VERCEL_URL", "").strip()
+    if deployment_domain:
+        return f"https://{deployment_domain}".rstrip("/")
+    return "https://samanta-social-publisher-mcp-9by1.vercel.app"
 
 
 def _b64url_encode(value: bytes) -> str:
@@ -129,6 +136,7 @@ def health() -> dict[str, object]:
         "runtime": "fastapi",
         "version": app.version,
         "time": datetime.now(timezone.utc).isoformat(),
+        "base_url": base_url(),
         "supabase_configured": status["supabase"],
         "meta_configured": status["meta"],
         "linkedin_configured": status["linkedin"],
