@@ -6,7 +6,7 @@ import os
 import re
 import unicodedata
 
-_BOOTSTRAP_VERSION = "config-compat-v1"
+_BOOTSTRAP_VERSION = "config-compat-v2"
 _SUPABASE_URL = "https://zmnzgwwpspjidygwzygi.supabase.co"
 _SUPABASE_PUBLISHABLE_KEY = "sb_publishable_95MtbIsPwTfqbM-7i4uTcQ_onHR2w0q"
 _APP_BASE_URL = "https://samanta-social-publisher-mcp-9by1.vercel.app"
@@ -133,6 +133,17 @@ def _jwt_role(value: str) -> str:
         return ""
 
 
+def _extract_supabase_key(raw: str, prefix: str, legacy_role: str) -> str:
+    text = str(raw or "")
+    match = re.search(re.escape(prefix) + r"[A-Za-z0-9_-]+", text)
+    if match:
+        return match.group(0)
+    for candidate in re.findall(r"eyJ[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+", text):
+        if _jwt_role(candidate) == legacy_role:
+            return candidate
+    return _clean(text)
+
+
 def _bootstrap() -> None:
     if os.environ.get("CONFIG_BOOTSTRAP_DONE") == _BOOTSTRAP_VERSION:
         return
@@ -224,6 +235,26 @@ def _bootstrap() -> None:
             os.environ["SUPABASE_SECRET_KEY"] = secret
             resolved_sources["SUPABASE_SECRET_KEY"] = "bundle"
 
+    # This application is permanently bound to this Supabase project. Pin the
+    # canonical URL so a malformed dashboard value cannot break outbound calls.
+    if os.environ.get("SUPABASE_URL", "").rstrip("/") != _SUPABASE_URL:
+        os.environ["SUPABASE_URL"] = _SUPABASE_URL
+        resolved_sources["SUPABASE_URL"] = "validated_fallback"
+
+    publishable_raw = os.environ.get("SUPABASE_PUBLISHABLE_KEY", "")
+    publishable_clean = _extract_supabase_key(publishable_raw, "sb_publishable_", "anon")
+    if publishable_clean:
+        os.environ["SUPABASE_PUBLISHABLE_KEY"] = publishable_clean
+        if publishable_clean != publishable_raw:
+            resolved_sources["SUPABASE_PUBLISHABLE_KEY"] = resolved_sources.get("SUPABASE_PUBLISHABLE_KEY", "direct") + "+sanitized"
+
+    secret_raw = os.environ.get("SUPABASE_SECRET_KEY", "")
+    secret_clean = _extract_supabase_key(secret_raw, "sb_secret_", "service_role")
+    if secret_clean:
+        os.environ["SUPABASE_SECRET_KEY"] = secret_clean
+        if secret_clean != secret_raw:
+            resolved_sources["SUPABASE_SECRET_KEY"] = resolved_sources.get("SUPABASE_SECRET_KEY", "direct") + "+sanitized"
+
     meta_parts = _tokenize(bundles.get("META", ""))
     if not os.environ.get("META_APP_ID"):
         app_id = next((part for part in meta_parts if part.isdigit() and len(part) >= 5), "")
@@ -269,11 +300,17 @@ def _bootstrap() -> None:
     os.environ["APPROVAL_REQUIRED"] = "true"
     os.environ["CONFIG_BOOTSTRAP_DONE"] = _BOOTSTRAP_VERSION
 
+    secret_value = os.environ.get("SUPABASE_SECRET_KEY", "")
     safe_status = {
         "bootstrap": _BOOTSTRAP_VERSION,
         "bundles_present": {name.lower(): bool(raw) for name, raw in bundles.items()},
         "resolved": {key.lower(): bool(os.environ.get(key, "").strip()) for key in _REQUIRED_KEYS},
         "sources": {key.lower(): resolved_sources.get(key, "missing") for key in _REQUIRED_KEYS},
+        "supabase_runtime": {
+            "url_validated": os.environ.get("SUPABASE_URL", "").rstrip("/") == _SUPABASE_URL,
+            "secret_kind": "opaque" if secret_value.startswith("sb_secret_") else "legacy_jwt" if _jwt_role(secret_value) == "service_role" else "unknown",
+            "secret_has_whitespace": any(char.isspace() for char in secret_value),
+        },
         "approval_required": True,
     }
     print("CONFIG_BOOTSTRAP " + json.dumps(safe_status, sort_keys=True))
@@ -297,7 +334,7 @@ def _patch_httpx_supabase_headers() -> None:
                 kwargs["headers"] = headers
             try:
                 return original(method, url, **kwargs)
-            except httpx.HTTPError as exc:
+            except Exception as exc:
                 print(f"SUPABASE_HTTPX_ERROR {type(exc).__name__}: {str(exc)[:300]}")
                 raise
         return original(method, url, **kwargs)
