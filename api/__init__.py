@@ -343,5 +343,76 @@ def _patch_httpx_supabase_headers() -> None:
     httpx.request = patched
 
 
+def _patch_meta_oauth_state_fallback() -> None:
+    from http.cookies import SimpleCookie
+    from urllib.parse import parse_qs, urlencode, urlsplit
+
+    from fastapi import FastAPI
+
+    original = FastAPI.__call__
+    if getattr(original, "_samanta_meta_state_patch", False):
+        return
+
+    async def patched(self, scope, receive, send):
+        if scope.get("type") != "http":
+            return await original(self, scope, receive, send)
+
+        path = scope.get("path", "")
+
+        if path == "/oauth/meta/callback":
+            query_text = (scope.get("query_string") or b"").decode("utf-8", errors="ignore")
+            query = parse_qs(query_text, keep_blank_values=True)
+            print("META_CALLBACK_QUERY keys=" + json.dumps(sorted(query.keys())))
+            if not query.get("state"):
+                cookie_header = ""
+                for key, value in scope.get("headers") or []:
+                    if key.lower() == b"cookie":
+                        cookie_header = value.decode("latin-1")
+                        break
+                cookies = SimpleCookie()
+                if cookie_header:
+                    cookies.load(cookie_header)
+                morsel = cookies.get("meta_oauth_state")
+                fallback_state = morsel.value if morsel else ""
+                if fallback_state:
+                    new_query = query_text + ("&" if query_text else "") + urlencode({"state": fallback_state})
+                    scope = dict(scope)
+                    scope["query_string"] = new_query.encode("utf-8")
+                    print("META_STATE_FALLBACK injected=true")
+                else:
+                    print("META_STATE_FALLBACK injected=false")
+
+        if path == "/connect/meta":
+            async def send_with_state_cookie(message):
+                if message.get("type") == "http.response.start" and 300 <= int(message.get("status", 0)) < 400:
+                    headers = list(message.get("headers") or [])
+                    location = ""
+                    for key, value in headers:
+                        if key.lower() == b"location":
+                            location = value.decode("latin-1")
+                            break
+                    state = ""
+                    if location:
+                        state = (parse_qs(urlsplit(location).query).get("state") or [""])[0]
+                    if state:
+                        cookie = (
+                            "meta_oauth_state=" + state
+                            + "; Max-Age=600; Path=/oauth/meta/callback; Secure; HttpOnly; SameSite=Lax"
+                        )
+                        headers.append((b"set-cookie", cookie.encode("latin-1")))
+                        message = dict(message)
+                        message["headers"] = headers
+                        print("META_STATE_COOKIE set=true")
+                await send(message)
+
+            return await original(self, scope, receive, send_with_state_cookie)
+
+        return await original(self, scope, receive, send)
+
+    patched._samanta_meta_state_patch = True
+    FastAPI.__call__ = patched
+
+
 _bootstrap()
 _patch_httpx_supabase_headers()
+_patch_meta_oauth_state_fallback()
