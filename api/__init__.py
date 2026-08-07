@@ -279,4 +279,32 @@ def _bootstrap() -> None:
     print("CONFIG_BOOTSTRAP " + json.dumps(safe_status, sort_keys=True))
 
 
+def _patch_httpx_supabase_headers() -> None:
+    import httpx
+
+    original = httpx.request
+    if getattr(original, "_samanta_supabase_patch", False):
+        return
+
+    def patched(method, url, **kwargs):
+        url_text = str(url)
+        if ".supabase.co/rest/v1/" in url_text:
+            headers = dict(kwargs.get("headers") or {})
+            apikey = str(headers.get("apikey") or "")
+            authorization = str(headers.get("Authorization") or "")
+            if apikey.startswith("sb_") and authorization == f"Bearer {apikey}":
+                headers.pop("Authorization", None)
+                kwargs["headers"] = headers
+            try:
+                return original(method, url, **kwargs)
+            except httpx.HTTPError as exc:
+                print(f"SUPABASE_HTTPX_ERROR {type(exc).__name__}: {str(exc)[:300]}")
+                raise
+        return original(method, url, **kwargs)
+
+    patched._samanta_supabase_patch = True
+    httpx.request = patched
+
+
 _bootstrap()
+_patch_httpx_supabase_headers()
