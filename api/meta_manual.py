@@ -13,8 +13,8 @@ from api.index import env, provider_request, upsert_account
 
 router = APIRouter()
 
-_MANUAL_KEY_SHA256 = "d848c74889056be1afa36c05abe03bb5ca310554fca2e48971fcb4f838077a2d"
-_MANUAL_EXPIRES_AT = 1786165200  # 2026-08-08 05:00:00 UTC
+_MANUAL_KEY_SHA256 = "fbe065a68378e225d3e3883c409ea8df848f354b428f65f3e4eb0b0cda64c03a"
+_MANUAL_EXPIRES_AT = 1786204800  # 2026-08-08 16:00:00 UTC
 _REQUIRED_SCOPES = {
     "pages_show_list",
     "pages_read_engagement",
@@ -80,8 +80,6 @@ async def manual_meta_connect(request: Request):
     version = env("META_GRAPH_VERSION") or "v23.0"
     graph = f"https://graph.facebook.com/{version}"
 
-    # Exchange the short-lived user token when Meta permits it. If the exchange
-    # is unavailable, keep validating the supplied token instead of exposing it.
     effective_token = token
     try:
         exchanged = provider_request(
